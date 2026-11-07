@@ -12,6 +12,12 @@ const uint16_t CACHE_LINES_COUNT = 8;
 const uint16_t RAM_SIZE = 512;
 const uint16_t REGISTER_FILE_SIZE = 8;
 
+struct AddressParts {
+  uint16_t tag;        // Bits [4-15]
+  uint16_t lineIndex;  // Bits [1-3]
+  uint16_t offset;     // Bit  [0]
+};
+
 struct CacheBlock {
   // TODO: ASK about tag value type
   uint16_t tag;
@@ -31,6 +37,14 @@ word_t registerFile[REGISTER_FILE_SIZE] = {0};
 word_t ram[RAM_SIZE] = {0};
 CacheLine cache[CACHE_LINES_COUNT];
 
+AddressParts breakDownAddress(addr_t memAddr) {
+  AddressParts parts;
+  parts.offset    = memAddr & 0b1;          // Mask lowest 1 bit
+  parts.lineIndex = (memAddr >> 1) & 0b111;   // Shift out bit 0, mask lowest 3 bits
+  parts.tag       = (memAddr >> 4) & 0b1111'1111'1111; // Shift out bits 0-3, mask 12 bits
+  return parts;
+}
+
 void initCache() {
   for (int i = 0; i < CACHE_LINES_COUNT; i++) {
     // Second block per line is fresh
@@ -45,6 +59,17 @@ void invalidateCache() {
     cache[i].blocks[1].validBit = 0;
   }
 }
+
+void setImmediate(uint16_t regAddr, word_t immediate) {
+  registerFile[regAddr] = immediate;
+}
+
+void storeWord(uint16_t regAddr, addr_t memAddr) {
+  word_t word = registerFile[regAddr];
+  //TODO: Write to cache; implement cache logic
+}
+
+void updateCache(word_t word, addr_t memAddr) {}
 
 void printCache() {
   cout << left << setw(3) << "L" << setw(3) << "B" << setw(3) << "S" << setw(3)
@@ -93,7 +118,7 @@ int main() {
       // TODO Store Word
     } else if (command == 'c') {
       cin >> regAddr >> immediate;
-      // TODO: Store Immediate
+      setImmediate(regAddr, immediate);
     } else if (command == 'p') {
       char target;
       cin >> target;
