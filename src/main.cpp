@@ -39,15 +39,21 @@ CacheLine cache[CACHE_LINES_COUNT];
 
 AddressParts breakDownAddress(addr_t memAddr) {
   AddressParts parts;
-  parts.offset    = memAddr & 0b1;          // Mask lowest 1 bit
-  parts.lineIndex = (memAddr >> 1) & 0b111;   // Shift out bit 0, mask lowest 3 bits
-  parts.tag       = (memAddr >> 4) & 0b1111'1111'1111; // Shift out bits 0-3, mask 12 bits
+  parts.offset = memAddr & 0b1;  // Mask lowest 1 bit
+  parts.lineIndex =
+      (memAddr >> 1) & 0b111;  // Shift out bit 0, mask lowest 3 bits
+  parts.tag =
+      (memAddr >> 4) & 0b1111'1111'1111;  // Shift out bits 0-3, mask 12 bits
   return parts;
+}
+
+addr_t reconstructEvenAddress(uint16_t tag, uint16_t lineIndex) {
+  return (tag << 4) | (lineIndex << 1);
 }
 
 void initCache() {
   for (int i = 0; i < CACHE_LINES_COUNT; i++) {
-    // Second block per line is fresh
+    // Second block per line is fresh on cache initialization
     cache[i].blocks[0] = {0, 1, 0, 0, {0, 0}};
     cache[i].blocks[1] = {0, 0, 0, 0, {0, 0}};
   }
@@ -63,13 +69,80 @@ void invalidateCache() {
 void setImmediate(uint16_t regAddr, word_t immediate) {
   registerFile[regAddr] = immediate;
 }
+void loadWord(uint16_t regAddr, addr_t memAddr) {
+  // Break address into parts:
+  AddressParts addressParts = breakDownAddress(memAddr);
+  CacheLine& line = cache[addressParts.lineIndex];
 
-void storeWord(uint16_t regAddr, addr_t memAddr) {
-  word_t word = registerFile[regAddr];
-  //TODO: Write to cache; implement cache logic
+  int blockIndex = -1;
+
+  // Check for Cache hit:
+  for (int i = 0; i < 2; i++) {
+    if (line.blocks[i].validBit && line.blocks[i].tag == addressParts.tag) {
+      blockIndex = i;
+      break;
+    }
+  }
+
+  //Is there a way for a hit to be dirty on load???
 }
+void storeWord(uint16_t regAddr, addr_t memAddr) {
+  AddressParts addressParts = breakDownAddress(memAddr);
+  CacheLine& line = cache[addressParts.lineIndex];
 
-void updateCache(word_t word, addr_t memAddr) {}
+  int blockIndex = -1;
+
+  // Check if current address is in the cache (we have a cache hit)
+  for (int i = 0; i < 2; i++) {
+    if (line.blocks[i].validBit && line.blocks[i].tag == addressParts.tag) {
+      blockIndex = i;
+      break;
+    }
+  }
+
+  if (blockIndex == -1) {
+    // If we have a cache miss, we must evict the stale block:
+    int staleBlockIndex = -1;
+    if (line.blocks[0].staleBit) {
+      staleBlockIndex = 0;
+    } else {
+      staleBlockIndex = 1;
+    }
+
+    CacheBlock& staleBlock = line.blocks[staleBlockIndex];
+
+    // Write-back schema: if stale block is valid and dirty we need to save
+    // its old words to RAM:
+    if (staleBlock.validBit && staleBlock.dirtyBit) {
+      addr_t oldEvenAddress =
+          reconstructEvenAddress(staleBlock.tag, addressParts.lineIndex);
+      ram[oldEvenAddress] = staleBlock.words[0];
+      ram[oldEvenAddress + 1] = staleBlock.words[1];
+    }
+
+    // We fetch the words for the new address from RAM (otherwise
+    // one of the words in the block would be garbage after we put the new one
+    // in)
+    addr_t newEvenAddress = memAddr - addressParts.offset;
+    staleBlock.words[0] = ram[newEvenAddress];
+    staleBlock.words[1] = ram[newEvenAddress + 1];
+    staleBlock.tag = addressParts.tag;
+    staleBlock.validBit = 1;
+
+    blockIndex = staleBlockIndex;
+  }
+
+  // No matter what happened beforehand, now we can safely put our word onto the
+  // block:
+  CacheBlock& block = line.blocks[blockIndex];
+  word_t word = registerFile[regAddr];
+  block.words[addressParts.offset] = word;
+  block.dirtyBit = 1;
+
+  // Finally we flip the stale bit:
+  block.staleBit = 0;
+  line.blocks[1 - blockIndex].staleBit = 1;
+}
 
 void printCache() {
   cout << left << setw(3) << "L" << setw(3) << "B" << setw(3) << "S" << setw(3)
@@ -113,11 +186,14 @@ int main() {
     } else if (command == 'l') {
       cin >> regAddr >> memAddr;
       // TODO Load Word
+      loadWord(regAddr, memAddr);
     } else if (command == 's') {
       cin >> regAddr >> memAddr;
-      // TODO Store Word
+
+      storeWord(regAddr, memAddr);
     } else if (command == 'c') {
       cin >> regAddr >> immediate;
+
       setImmediate(regAddr, immediate);
     } else if (command == 'p') {
       char target;
