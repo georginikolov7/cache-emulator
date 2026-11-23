@@ -1,9 +1,10 @@
 #include <cstdint>
 #include <iomanip>
 #include <iostream>
+#include <cctype>
 using namespace std;
 
-// We define aliases for word  and address types so we have a single source of
+// We define aliases for word and address types so we have a single source of
 // truth. Words can be negative values, so we use int16_t instead of uint16_t
 using word_t = int16_t;
 using addr_t = uint16_t;
@@ -66,28 +67,7 @@ void invalidateCache() {
   }
 }
 
-void setImmediate(uint16_t regAddr, word_t immediate) {
-  registerFile[regAddr] = immediate;
-}
-void loadWord(uint16_t regAddr, addr_t memAddr) {
-  // Break address into parts:
-  AddressParts addressParts = breakDownAddress(memAddr);
-  CacheLine& line = cache[addressParts.lineIndex];
-
-  int blockIndex = -1;
-
-  // Check for Cache hit:
-  for (int i = 0; i < 2; i++) {
-    if (line.blocks[i].validBit && line.blocks[i].tag == addressParts.tag) {
-      blockIndex = i;
-      break;
-    }
-  }
-
-  //Is there a way for a hit to be dirty on load???
-}
-void storeWord(uint16_t regAddr, addr_t memAddr) {
-  AddressParts addressParts = breakDownAddress(memAddr);
+CacheBlock& writeBack(const AddressParts& addressParts, addr_t memAddr) {
   CacheLine& line = cache[addressParts.lineIndex];
 
   int blockIndex = -1;
@@ -123,46 +103,68 @@ void storeWord(uint16_t regAddr, addr_t memAddr) {
     // We fetch the words for the new address from RAM (otherwise
     // one of the words in the block would be garbage after we put the new one
     // in)
+    // For simplicity we get the 'even' (0) offset address:
     addr_t newEvenAddress = memAddr - addressParts.offset;
     staleBlock.words[0] = ram[newEvenAddress];
     staleBlock.words[1] = ram[newEvenAddress + 1];
     staleBlock.tag = addressParts.tag;
     staleBlock.validBit = 1;
+    // The block is now synced with RAM:
+    staleBlock.dirtyBit = 0;
 
     blockIndex = staleBlockIndex;
   }
 
-  // No matter what happened beforehand, now we can safely put our word onto the
-  // block:
-  CacheBlock& block = line.blocks[blockIndex];
-  word_t word = registerFile[regAddr];
-  block.words[addressParts.offset] = word;
-  block.dirtyBit = 1;
-
-  // Finally we flip the stale bit:
-  block.staleBit = 0;
+  // Flip stale bit:
+  line.blocks[blockIndex].staleBit = 0;
   line.blocks[1 - blockIndex].staleBit = 1;
+
+  return line.blocks[blockIndex];
+}
+void setImmediate(uint16_t regAddr, word_t immediate) {
+  registerFile[regAddr] = immediate;
+}
+void loadWord(uint16_t regAddr, addr_t memAddr) {
+  AddressParts addressParts = breakDownAddress(memAddr);
+
+  // Trigger the writeBack logic and get the block we need:
+  CacheBlock& block = writeBack(addressParts, memAddr);
+
+  registerFile[regAddr] = block.words[addressParts.offset];
+}
+void storeWord(uint16_t regAddr, addr_t memAddr) {
+  word_t word = registerFile[regAddr];
+
+  AddressParts addressParts = breakDownAddress(memAddr);
+
+  // Trigger the writeBack logic and get the block we need:
+  CacheBlock& block = writeBack(addressParts, memAddr);
+
+  block.words[addressParts.offset] = word;
+
+  // Set the block dirty - the new value is not in RAM yet
+  block.dirtyBit = 1;
 }
 
 void printCache() {
   cout << left << setw(3) << "L" << setw(3) << "B" << setw(3) << "S" << setw(3)
-       << "V" << setw(3) << "D" << setw(6) << "W1"
+       << "V" << setw(3) << "D" << setw(8) << "W1"
        << "W2" << endl;
 
   for (int i = 0; i < 8; ++i) {
     for (int j = 0; j < 2; ++j) {
       const CacheBlock& blk = cache[i].blocks[j];
       cout << left << setw(3) << i << setw(3) << j << setw(3) << blk.staleBit
-           << setw(3) << blk.validBit << setw(3) << blk.dirtyBit << setw(6)
+           << setw(3) << blk.validBit << setw(3) << blk.dirtyBit << setw(8)
            << blk.words[0] << blk.words[1] << endl;
     }
   }
 }
 
 void printRam() {
-  cout << left << setw(6) << "ADDR" << "VALUE" << endl;
+  cout << left << setw(8) << "ADDR" << "VALUE" << endl;
   for (addr_t addr = 0; addr < 512; addr++) {
-    cout << left << setw(6) << addr << ram[addr] << endl;
+    cout << left << setw(8) << addr << ram[addr] << endl;
   }
 }
 
@@ -185,7 +187,7 @@ int main() {
       break;
     } else if (command == 'l') {
       cin >> regAddr >> memAddr;
-      // TODO Load Word
+
       loadWord(regAddr, memAddr);
     } else if (command == 's') {
       cin >> regAddr >> memAddr;
