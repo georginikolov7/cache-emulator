@@ -1,7 +1,7 @@
+#include <cctype>
 #include <cstdint>
 #include <iomanip>
 #include <iostream>
-#include <cctype>
 using namespace std;
 
 // We define aliases for word and address types so we have a single source of
@@ -14,13 +14,12 @@ const uint16_t RAM_SIZE = 512;
 const uint16_t REGISTER_FILE_SIZE = 8;
 
 struct AddressParts {
-  uint16_t tag;        // Bits [4-15]
-  uint16_t lineIndex;  // Bits [1-3]
-  uint16_t offset;     // Bit  [0]
+  uint16_t tag;        // Bits 4-15
+  uint16_t lineIndex;  // Bits 1-3
+  uint16_t offset;     // Bit  0
 };
 
 struct CacheBlock {
-  // TODO: ASK about tag value type
   uint16_t tag;
   bool staleBit;
   bool validBit;
@@ -40,21 +39,27 @@ CacheLine cache[CACHE_LINES_COUNT];
 
 AddressParts breakDownAddress(addr_t memAddr) {
   AddressParts parts;
-  parts.offset = memAddr & 0b1;  // Mask lowest 1 bit
-  parts.lineIndex =
-      (memAddr >> 1) & 0b111;  // Shift out bit 0, mask lowest 3 bits
-  parts.tag =
-      (memAddr >> 4) & 0b1111'1111'1111;  // Shift out bits 0-3, mask 12 bits
+  // Mask lowest 1 bit
+  parts.offset = memAddr & 0b1;
+
+  // Shift out bit 0, mask lowest 3 bits
+  parts.lineIndex = (memAddr >> 1) & 0b111;
+  
+  // Shift out bit 0, mask lowest 3 bits
+  parts.tag = (memAddr >> 4) & 0b1111'1111'1111;
   return parts;
 }
 
 addr_t reconstructEvenAddress(uint16_t tag, uint16_t lineIndex) {
+  // slide the 12 bit tag 4 bits to the left and slide the 3 bit index 1 bit to
+  // the left. OR the two to get the original address (last bit left at 0 to get
+  // the even address)
   return (tag << 4) | (lineIndex << 1);
 }
 
 void initCache() {
   for (int i = 0; i < CACHE_LINES_COUNT; i++) {
-    // Second block per line is fresh on cache initialization
+    // First block per line is stale on cache initialization
     cache[i].blocks[0] = {0, 1, 0, 0, {0, 0}};
     cache[i].blocks[1] = {0, 0, 0, 0, {0, 0}};
   }
@@ -91,20 +96,21 @@ CacheBlock& writeBack(const AddressParts& addressParts, addr_t memAddr) {
 
     CacheBlock& staleBlock = line.blocks[staleBlockIndex];
 
-    // Write-back schema: if stale block is valid and dirty we need to save
+    // Write-back scheme: if stale block is valid and dirty we need to save
     // its old words to RAM:
     if (staleBlock.validBit && staleBlock.dirtyBit) {
       addr_t oldEvenAddress =
           reconstructEvenAddress(staleBlock.tag, addressParts.lineIndex);
+
       ram[oldEvenAddress] = staleBlock.words[0];
       ram[oldEvenAddress + 1] = staleBlock.words[1];
     }
 
-    // We fetch the words for the new address from RAM (otherwise
+    // We fetch both words for the new address from RAM (otherwise
     // one of the words in the block would be garbage after we put the new one
     // in)
-    // For simplicity we get the 'even' (0) offset address:
     addr_t newEvenAddress = memAddr - addressParts.offset;
+
     staleBlock.words[0] = ram[newEvenAddress];
     staleBlock.words[1] = ram[newEvenAddress + 1];
     staleBlock.tag = addressParts.tag;
@@ -121,9 +127,11 @@ CacheBlock& writeBack(const AddressParts& addressParts, addr_t memAddr) {
 
   return line.blocks[blockIndex];
 }
+
 void setImmediate(uint16_t regAddr, word_t immediate) {
   registerFile[regAddr] = immediate;
 }
+
 void loadWord(uint16_t regAddr, addr_t memAddr) {
   AddressParts addressParts = breakDownAddress(memAddr);
 
@@ -132,6 +140,7 @@ void loadWord(uint16_t regAddr, addr_t memAddr) {
 
   registerFile[regAddr] = block.words[addressParts.offset];
 }
+
 void storeWord(uint16_t regAddr, addr_t memAddr) {
   word_t word = registerFile[regAddr];
 
@@ -141,7 +150,6 @@ void storeWord(uint16_t regAddr, addr_t memAddr) {
   CacheBlock& block = writeBack(addressParts, memAddr);
 
   block.words[addressParts.offset] = word;
-
   // Set the block dirty - the new value is not in RAM yet
   block.dirtyBit = 1;
 }
@@ -151,9 +159,10 @@ void printCache() {
        << "V" << setw(3) << "D" << setw(8) << "W1"
        << "W2" << endl;
 
-  for (int i = 0; i < 8; ++i) {
+  for (int i = 0; i < CACHE_LINES_COUNT; ++i) {
     for (int j = 0; j < 2; ++j) {
       const CacheBlock& blk = cache[i].blocks[j];
+
       cout << left << setw(3) << i << setw(3) << j << setw(3) << blk.staleBit
            << setw(3) << blk.validBit << setw(3) << blk.dirtyBit << setw(8)
            << blk.words[0] << blk.words[1] << endl;
@@ -163,6 +172,7 @@ void printCache() {
 
 void printRam() {
   cout << left << setw(8) << "ADDR" << "VALUE" << endl;
+
   for (addr_t addr = 0; addr < 512; addr++) {
     cout << left << setw(8) << addr << ram[addr] << endl;
   }
